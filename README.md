@@ -150,7 +150,7 @@ Choose your size based on your machine:
 | Model | Size | Speed on CPU |
 |---|---|---|
 | gemma3:1b | ~800MB | Fastest |
-| gemma3:4b | ~2.5GB | Recommended ✅ |
+| gemma3:4b | ~2.5GB | Recommended |
 | gemma3:12b | ~7GB | Slow on CPU |
 
 ### 5. Install Redis (Windows)
