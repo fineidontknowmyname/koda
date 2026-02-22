@@ -1,9 +1,41 @@
-fastapi
-uvicorn
-pydantic
-pydantic-settings
-google-generativeai
-mediapipe
-reportlab
-python-multipart
-opencv-python
+# ── Web framework ─────────────────────────────────────────────────────────────
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+python-multipart>=0.0.9        # multipart/form-data uploads (vision endpoint)
+
+# ── Data validation ───────────────────────────────────────────────────────────
+pydantic>=2.7.0
+pydantic-settings>=2.3.0
+
+# ── LLM backend (Ollama — local, no API key required) ─────────────────────────
+httpx>=0.27.0                  # async HTTP client for Ollama REST API
+ollama>=0.2.0                  # optional official Ollama Python client
+
+# ── Vision / pose analysis (on-device) ────────────────────────────────────────
+# NOTE: mediapipe and tensorflow-cpu have no Python 3.14 wheels yet.
+# Uncomment these when upstream releases 3.14-compatible builds.
+# mediapipe>=0.10.14           # MediaPipe Pose landmark detection
+# tensorflow-cpu>=2.16.0       # MobileNetV2 inference (CPU-only)
+opencv-python-headless>=4.9.0  # image decoding/preprocessing (headless = no GUI deps)
+Pillow>=10.3.0                 # image I/O used by MobileNetV2 preprocessor
+numpy>=1.26.0                  # array ops (used by vision pipeline when TF is available)
+
+# ── Background tasks ──────────────────────────────────────────────────────────
+celery[redis]>=5.4.0           # task queue; [redis] pulls in redis-py
+redis>=5.0.0                   # Redis client (broker + result backend)
+
+# ── Database ──────────────────────────────────────────────────────────────────
+sqlalchemy[asyncio]>=2.0.30    # async ORM; asyncio extra pulls in greenlet
+aiosqlite>=0.20.0              # SQLite async driver (default dev DB, zero-config)
+# asyncpg>=0.29.0              # PostgreSQL async driver (no 3.14 wheel yet — uncomment for production)
+# psycopg2-binary>=2.9.9       # PostgreSQL sync driver (no 3.14 wheel yet — uncomment for production)
+alembic>=1.13.0                # database migrations
+
+# ── PDF generation ─────────────────────────────────────────────────────────────
+reportlab>=4.2.0
+
+# ── YouTube transcript fetching ───────────────────────────────────────────────
+youtube-transcript-api>=0.6.2
+
+# ── Utilities ─────────────────────────────────────────────────────────────────
+python-Levenshtein>=0.25.0     # fast string similarity (exercise name matching)
