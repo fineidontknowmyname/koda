@@ -1,92 +1,196 @@
-from fastapi import APIRouter, UploadFile, File, HTTPException, Form
-from typing import Any
-import cv2
-import numpy as np
-import json
+"""
+api/v1/endpoints/vision.py
+---------------------------
+Body composition analysis endpoint backed by on-device MobileNetV2
+(via BodyCompositionService) instead of the deprecated Gemini vision API.
 
-from src.services.vision.landmarks import landmark_detector
-from src.services.fitness.engine import fitness_engine
-from src.schemas.vision import VisionAnalysisResult, BiometricAnalysis, LandmarkPoint
-from src.schemas.user import UserProfile
+Endpoint
+────────
+POST /vision/analyze-body
+
+  Accepts 1–3 images (front, side, back views) as multipart file uploads.
+  Requires explicit user consent via the `X-Vision-Consent: true` header.
+  Returns a BodyComposition Pydantic model.
+
+Privacy & consent
+──────────────────
+Body image analysis is sensitive.  Callers MUST include the header:
+
+    X-Vision-Consent: true
+
+Requests without this header receive HTTP 451 (Unavailable For Legal Reasons).
+
+All inference runs on-device (MediaPipe + MobileNetV2); no image bytes are
+sent to any external service.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Annotated, List
+
+from fastapi import (
+    APIRouter,
+    File,
+    Header,
+    HTTPException,
+    UploadFile,
+    status,
+)
+
+from schemas.vision import BodyComposition
+from services.vision.body_composition import body_composition_service
+
+log = logging.getLogger(__name__)
 
 router = APIRouter()
 
-@router.post("/analyze-frame", response_model=VisionAnalysisResult, summary="Analyze a single image frame")
-async def analyze_frame(
-    file: UploadFile = File(...)
-) -> Any:
-    """
-    Receives an image file, detects landmarks, and returns coordinates.
-    """
-    try:
-        contents = await file.read()
-        nparr = np.frombuffer(contents, np.uint8)
-        frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        
-        if frame is None:
-            raise HTTPException(status_code=400, detail="Invalid image data")
+# ── Constants ──────────────────────────────────────────────────────────────────
 
-        landmarks = landmark_detector.detect(frame)
-        
-        if not landmarks:
-            return VisionAnalysisResult(
-                frame_timestamp=0.0,
-                has_landmarks=False
-            )
-            
-        # Convert to Schema
-        landmark_points = [
-            LandmarkPoint(x=lm.x, y=lm.y, z=lm.z, visibility=lm.visibility) 
-            for lm in landmarks
-        ]
-        
-        return VisionAnalysisResult(
-            frame_timestamp=0.0,
-            has_landmarks=True,
-            landmarks=landmark_points
+_MAX_IMAGE_BYTES  = 10 * 1024 * 1024   # 10 MB per image
+_ALLOWED_MIME     = {"image/jpeg", "image/jpg", "image/png", "image/webp"}
+_CONSENT_HEADER   = "x-vision-consent"
+
+
+# ── Consent guard ──────────────────────────────────────────────────────────────
+
+def _require_consent(x_vision_consent: str | None) -> None:
+    """Raise HTTP 451 if the caller hasn't sent the consent header."""
+    if not x_vision_consent or x_vision_consent.strip().lower() != "true":
+        raise HTTPException(
+            status_code=status.HTTP_451_UNAVAILABLE_FOR_LEGAL_REASONS,
+            detail=(
+                "Body image analysis requires explicit consent. "
+                "Include the header 'X-Vision-Consent: true' in your request."
+            ),
         )
 
-    except Exception as e:
-        print(f"Vision Error: {e}")
-        raise HTTPException(status_code=500, detail="Internal Server Error processing image")
 
-@router.post("/biometrics", response_model=BiometricAnalysis, summary="Extract biometric ratios")
-async def extract_biometrics(
-    file: UploadFile = File(...),
-    user_profile_json: str = Form(...)
-) -> Any:
+# ── Validation helper ──────────────────────────────────────────────────────────
+
+async def _read_image(file: UploadFile) -> bytes:
     """
-    Extracts V-Taper, Body Fat, etc. requires image and user profile (for height calibration).
-    user_profile_json expected as stringified JSON of UserProfile.
+    Read and validate a single uploaded image file.
+
+    Raises HTTP 400 for wrong MIME type or oversized files.
     """
+    if file.content_type not in _ALLOWED_MIME:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Unsupported file type '{file.content_type}' for '{file.filename}'. "
+                f"Accepted types: {', '.join(sorted(_ALLOWED_MIME))}"
+            ),
+        )
+
+    data = await file.read()
+
+    if len(data) > _MAX_IMAGE_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"Image '{file.filename}' exceeds the {_MAX_IMAGE_BYTES // (1024*1024)} MB limit."
+            ),
+        )
+
+    if not data:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Image '{file.filename}' is empty.",
+        )
+
+    return data
+
+
+# ── Endpoint ───────────────────────────────────────────────────────────────────
+
+@router.post(
+    "/analyze-body",
+    response_model=BodyComposition,
+    summary="Multi-view body composition analysis (on-device MobileNetV2)",
+    description=(
+        "Upload 1–3 photos (front, side, rear) for body composition analysis.\n\n"
+        "Analysis runs entirely on-device (MobileNetV2 + MediaPipe Pose) — "
+        "no image data leaves the server.\n\n"
+        "**Required header:** `X-Vision-Consent: true`"
+    ),
+)
+async def analyze_body(
+    front: Annotated[UploadFile, File(description="Front-view image (required)")] = ...,
+    side:  Annotated[UploadFile | None, File(description="Side-view image (optional)")] = None,
+    back:  Annotated[UploadFile | None, File(description="Rear-view image (optional)")] = None,
+    x_vision_consent: Annotated[
+        str | None,
+        Header(alias="X-Vision-Consent", description="Must be 'true' to consent to image analysis"),
+    ] = None,
+    user_height_cm: float = 175.0,
+    gender: str = "male",
+) -> BodyComposition:
+    """
+    Analyse up to three body images and return a `BodyComposition` result.
+
+    Parameters
+    ----------
+    front           Front-view image (JPEG/PNG/WebP, ≤ 10 MB). Required.
+    side            Side-view image. Optional but improves V-taper accuracy.
+    back            Rear-view image. Optional.
+    x_vision_consent Must be "true" (case-insensitive).
+    user_height_cm  Known height used to calibrate pixel → cm scale.
+    gender          "male" or "female" — influences the RFM body-fat constant.
+
+    Returns
+    -------
+    BodyComposition
+        `is_valid_person=False` when no clear full-body shot is detected.
+    """
+    # ── Consent gate ──────────────────────────────────────────────────────────
+    _require_consent(x_vision_consent)
+
+    # ── Validate & read images ────────────────────────────────────────────────
+    images: List[bytes] = []
+
+    front_bytes = await _read_image(front)
+    images.append(front_bytes)
+
+    if side is not None:
+        images.append(await _read_image(side))
+
+    if back is not None:
+        images.append(await _read_image(back))
+
+    log.info(
+        "analyze-body: received %d image(s)  height=%.1f cm  gender=%s",
+        len(images), user_height_cm, gender,
+    )
+
+    # ── Validate gender param ─────────────────────────────────────────────────
+    if gender.lower() not in ("male", "female"):
+        raise HTTPException(
+            status_code=400,
+            detail="'gender' must be 'male' or 'female'.",
+        )
+
+    # ── Run inference ─────────────────────────────────────────────────────────
     try:
-        # Parse User Profile
-        user_data = json.loads(user_profile_json)
-        user_profile = UserProfile(**user_data)
-        
-        # Process Image
-        contents = await file.read()
-        nparr = np.frombuffer(contents, np.uint8)
-        frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        
-        if frame is None:
-            raise HTTPException(status_code=400, detail="Invalid image data")
-            
-        landmarks = landmark_detector.detect(frame)
-        
-        if not landmarks:
-            raise HTTPException(status_code=400, detail="No person detected in image")
-            
-        # Analysis
-        result = fitness_engine.calculate_biometric_ratios(landmarks, user_profile)
-        
-        if "error" in result:
-             raise HTTPException(status_code=400, detail=result["error"])
-             
-        return BiometricAnalysis(**result)
+        result = await body_composition_service.analyze(
+            images=images,
+            user_height_cm=user_height_cm,
+            gender=gender.lower(),
+        )
+    except Exception as exc:
+        log.exception("Body composition analysis failed: %s", exc)
+        raise HTTPException(
+            status_code=500,
+            detail="Body composition analysis failed. Please try again.",
+        )
 
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=400, detail="Invalid JSON for user_profile_json")
-    except Exception as e:
-        print(f"Biometric Error: {e}")
-        raise HTTPException(status_code=500, detail=f"Internal Error: {str(e)}")
+    if not result.is_valid_person:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "No clear full-body person detected in the provided image(s). "
+                "Please upload well-lit, full-body photographs."
+            ),
+        )
+
+    return result

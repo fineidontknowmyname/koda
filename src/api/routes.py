@@ -1,38 +1,58 @@
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
-from fastapi.responses import StreamingResponse
-from io import BytesIO
-from src.schemas.plan import GeneratePlanRequest
-from src.api.dependencies import get_orchestrator
-from src.core.orchestrator import PlanOrchestrator
-from src.reporting.pdf_architect import pdf_architect
+"""
+api/routes.py
+--------------
+Top-level legacy route shim.
 
-api_router = APIRouter()
+The old POST /generate-plan route is preserved as a permanent redirect to
+POST /api/v1/plans/generate/pdf so existing frontend clients keep working
+without any changes.
 
-@api_router.post("/generate-plan", summary="Generate a 4-week fitness PDF")
-async def generate_plan_endpoint(
-    request: GeneratePlanRequest,
-    orchestrator: PlanOrchestrator = Depends(get_orchestrator)
-):
-    try:
-        # 1. Orchestrate the Logic
-        plan = await orchestrator.generate_plan(
-            user_profile=request.user_profile,
-            transcript_text=request.transcript_text
-        )
-        
-        # 2. Render PDF
-        pdf_bytes = pdf_architect.render_plan(plan)
-        
-        # 3. Stream Response
-        return StreamingResponse(
-            BytesIO(pdf_bytes),
-            media_type="application/pdf",
-            headers={"Content-Disposition": f"attachment; filename=koda_plan.pdf"}
-        )
-        
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        # Log this in production
-        print(f"Server Error: {e}")
-        raise HTTPException(status_code=500, detail="Internal Server Error processing plan.")
+Why a redirect and not a proxy?
+ - 307 Temporary Redirect preserves the HTTP method (POST stays POST) and
+   the request body, so multipart / JSON payloads pass through unchanged.
+ - The frontend only needs to follow the redirect — most HTTP clients
+   (fetch, axios, requests) do this transparently.
+
+New frontend code should use /api/v1/plans/generate directly.
+"""
+
+from __future__ import annotations
+
+import logging
+
+from fastapi import APIRouter
+from fastapi.responses import RedirectResponse
+
+from api.v1.api import api_router  # noqa: F401  (re-exported for app.include_router)
+
+log = logging.getLogger(__name__)
+
+router = APIRouter()
+
+
+# ── Legacy redirect ────────────────────────────────────────────────────────────
+
+@router.api_route(
+    "/generate-plan",
+    methods=["POST", "GET"],
+    include_in_schema=True,
+    summary="[Legacy] Redirect to /api/v1/plans/generate/pdf",
+    description=(
+        "**Deprecated.** This route exists solely for backward compatibility "
+        "with frontend clients that still call `/generate-plan`.\n\n"
+        "It issues a **307 Temporary Redirect** to `POST /api/v1/plans/generate/pdf` "
+        "which preserves the request method and body."
+    ),
+    tags=["Legacy"],
+)
+async def legacy_generate_plan_redirect() -> RedirectResponse:
+    """
+    Permanently redirects legacy POST /generate-plan callers to the versioned endpoint.
+
+    307 (not 308) is used so that browsers and HTTP clients re-send the body.
+    """
+    log.info("Legacy /generate-plan called — redirecting to /api/v1/plans/generate/pdf")
+    return RedirectResponse(
+        url="/api/v1/plans/generate/pdf",
+        status_code=307,
+    )

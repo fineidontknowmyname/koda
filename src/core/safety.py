@@ -1,6 +1,6 @@
 from typing import List
-from src.schemas.content import Exercise
-from src.schemas.common import Injury, Equipment
+from schemas.content import Exercise
+from schemas.common import Injury, Equipment
 
 class SafetyFilterEngine:
     def filter_exercises(self, exercises: List[Exercise], injuries: List[Injury], available_equipment: List[Equipment]) -> List[Exercise]:

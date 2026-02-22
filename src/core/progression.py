@@ -1,7 +1,7 @@
 from copy import deepcopy
 from typing import List
-from src.schemas.plan import WeeklySchedule, WorkoutSession, WorkoutExercise, WorkoutSet
-from src.schemas.content import Exercise
+from schemas.plan import WeeklySchedule, WorkoutSession, WorkoutExercise, WorkoutSet
+from schemas.content import Exercise
 
 class ProgressionEngine:
     def apply_progression(self, base_week: WeeklySchedule, total_weeks: int, capacity_score: float) -> List[WeeklySchedule]:

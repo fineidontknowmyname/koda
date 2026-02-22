@@ -32,3 +32,21 @@ class FitnessGoal(str, Enum):
     flexibility_gain="flexibility_gain"
     general_fitness="general_fitness"
 
+class ActivityLevel(str, Enum):
+    sedentary="sedentary"
+    lightly_active="lightly_active"
+    moderately_active="moderately_active"
+    very_active="very_active"
+    extra_active="extra_active"
+
+class MuscleLevel(str, Enum):
+    low="low"
+    moderate="moderate"
+    high="high"
+    very_high="very_high"
+
+class BodyType(str, Enum):
+    ectomorph="ectomorph"
+    mesomorph="mesomorph"
+    endomorph="endomorph"
+
