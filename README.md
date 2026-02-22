@@ -1,153 +1,368 @@
-# Koda API 🏋️‍♂️📄
+# FitGen AI — Koda
 
-**Koda API** is a powerful engine designed to generate personalized, science-based 4-week fitness plans. It takes user biometrics, strength metrics, and consultation transcripts to orchestrate a tailored workout schedule, delivered instantly as a professional PDF.
+> **AI-powered personalised fitness plan generator.**
+> Upload body photos, paste YouTube fitness videos, and get a fully personalised 4-week workout plan + 7-day diet plan as a downloadable PDF — all running locally on your machine with no external AI API costs.
 
-## 🚀 Key Features
+---
 
-*   **Intelligent Progression Engine:** Automatically scales workout volume and intensity over 4 weeks based on user capacity scores.
-*   **Dynamic Plan Generation:** Orchestrates workouts tailored to user goals, equipment access, and experience levels.
-*   **Professional PDF Reporting:** Generates clean, ready-to-print PDF guides using `ReportLab`.
-*   **RESTful API:** Built with **FastAPI** for high performance and easy integration.
-*   **AI-Powered Context:** Leverages Google Gemini (via `google-generativeai`) to understand user context from consultation transcripts.
+## What It Does
 
-## 🛠️ Tech Stack
+You provide:
+- Your age, height, weight, fitness level, goals, equipment, injuries
+- How many hours/day you are physically active
+- 1–5 YouTube links (workout videos, diet videos, exercise tutorials)
+- Optionally: 3 body photos (front / side / back) for body composition analysis
 
-*   **Framework:** [FastAPI](https://fastapi.tiangolo.com/)
-*   **Language:** Python 3.9+
-*   **Validation:** [Pydantic](https://docs.pydantic.dev/)
-*   **PDF Generation:** [ReportLab](https://pypi.org/project/reportlab/)
-*   **AI/LLM:** [Google Gemini](https://ai.google.dev/)
-*   **Server:** [Uvicorn](https://www.uvicorn.org/)
+FitGen gives you:
+- A **4-week progressive workout plan** tailored to your benchmarks and goals
+- A **7-day personalised diet plan** with calorie targets and macro breakdown
+- A **body composition analysis** (estimated body fat %, muscle level, shoulder-to-waist ratio)
+- A **downloadable PDF** with all 4 sections ready to follow
 
-## 📂 Project Structure
+Everything runs locally. No OpenAI. No Gemini. No subscription.
+
+---
+
+## Tech Stack
+
+| Layer | Technology |
+|---|---|
+| Backend | FastAPI + Python 3.11 |
+| LLM | Ollama (Gemma 3 / Mistral 7B — local) |
+| Vision | MobileNetV2 + MediaPipe (local) |
+| Task Queue | Celery + Redis |
+| Database | SQLAlchemy + SQLite |
+| PDF | ReportLab |
+| Frontend | Next.js 16 + React 19 + Tailwind CSS v4 |
+| YouTube | youtube-transcript-api |
+
+---
+
+## Architecture
+
+```
+Browser (Next.js)
+      │
+      ▼
+FastAPI Backend
+      │
+      ├── POST /api/v1/plans/generate
+      │         │
+      │         ▼
+      │    Celery Worker (async)
+      │         │
+      │         ├── 1. Fetch YouTube transcripts (parallel)
+      │         ├── 2. Classify videos (Ollama)
+      │         ├── 3. Extract exercises + meals (Ollama)
+      │         ├── 4. Compute BMI + TDEE + protein targets
+      │         ├── 5. Score + cherry-pick exercises
+      │         ├── 6. Build 4-week split schedule
+      │         ├── 7. Build 7-day diet plan
+      │         ├── 8. Render 4-section PDF (ReportLab)
+      │         └── 9. Mark job SUCCESS
+      │
+      ├── GET /api/v1/plans/jobs/{id}  ← frontend polls this
+      │
+      └── POST /api/v1/vision/analyze-body
+                │
+                └── MediaPipe pose → shoulder-to-waist ratio
+                    MobileNetV2 → body fat % + muscle level
+```
+
+---
+
+## PDF Output — 4 Sections
+
+| Section | Content |
+|---|---|
+| 1 — User Metrics | BMI, TDEE, daily calorie target, macro targets (protein/carbs/fat), ideal weight reference, body composition summary, shoulder-to-waist ratio |
+| 2 — 4-Week Workout Plan | Weekly split, exercise tables with sets/reps/weight, form cues, source video attribution, weekly progression |
+| 3 — 7-Day Diet Plan | Meal table (breakfast/lunch/dinner/snack), per-meal macros, daily calorie totals, dietary restriction flags |
+| 4 — Exercise Reference | One entry per exercise: form cues, common mistakes, progression tips, 4-week volume table |
+
+---
+
+## Prerequisites
+
+Install these before running the app:
+
+| Tool | Purpose | Install |
+|---|---|---|
+| Python 3.11+ | Backend runtime | python.org |
+| Node.js 20+ | Frontend runtime | nodejs.org |
+| Ollama | Local LLM server | ollama.com |
+| Redis | Celery message broker | See below |
+
+---
+
+## Setup
+
+### 1. Clone the repo
+
+```bash
+git clone https://github.com/fineidontknowmyname/koda.git
+cd koda
+```
+
+### 2. Backend setup
+
+```bash
+# Create virtual environment
+python -m venv venv
+venv\Scripts\activate        # Windows
+source venv/bin/activate     # Mac/Linux
+
+# Install dependencies
+pip install -r requirements.txt
+```
+
+### 3. Environment variables
+
+```bash
+# Copy the example file
+copy .env.example .env      # Windows
+cp .env.example .env        # Mac/Linux
+
+# Edit .env with your values
+```
+
+Required `.env` values:
+
+```env
+OLLAMA_HOST=http://localhost:11434
+OLLAMA_MODEL=gemma3:4b
+REDIS_URL=redis://localhost:6379/0
+DATABASE_URL=sqlite:///./koda.db
+SECRET_KEY=your-secret-key-here
+ALGORITHM=HS256
+ACCESS_TOKEN_EXPIRE_MINUTES=30
+```
+
+### 4. Pull the Ollama model
+
+```bash
+# Install Ollama from ollama.com, then:
+ollama pull gemma3:4b
+```
+
+Choose your size based on your machine:
+
+| Model | Size | Speed on CPU |
+|---|---|---|
+| gemma3:1b | ~800MB | Fastest |
+| gemma3:4b | ~2.5GB | Recommended ✅ |
+| gemma3:12b | ~7GB | Slow on CPU |
+
+### 5. Install Redis (Windows)
+
+Download and run the installer:
+```
+https://github.com/microsoftarchive/redis/releases/download/win-3.0.504/Redis-x64-3.0.504.msi
+```
+
+Verify it works:
+```powershell
+redis-cli ping
+# Should return: PONG
+```
+
+Mac/Linux:
+```bash
+brew install redis && redis-server   # Mac
+sudo apt install redis-server        # Linux
+```
+
+### 6. Frontend setup
+
+```bash
+cd frontend
+npm install
+```
+
+### 7. Database initialisation
+
+```bash
+# From koda/ root
+python -c "from src.db.base import Base; from src.db.session import engine; Base.metadata.create_all(engine)"
+```
+
+---
+
+## Running the App
+
+Open **4 terminals** from the `koda/` root:
+
+```bash
+# Terminal 1 — Ollama (LLM server)
+ollama serve
+
+# Terminal 2 — Redis (already running as Windows service)
+# Nothing to do — Redis starts automatically on Windows
+# On Mac/Linux: redis-server
+
+# Terminal 3 — Celery worker (background job processor)
+celery -A src.workers.celery_app worker --loglevel=info --pool=solo
+
+# Terminal 4 — FastAPI backend
+uvicorn src.main:app --reload --port 8000
+```
+
+```bash
+# Terminal 5 — Next.js frontend
+cd frontend
+npm run dev
+```
+
+Open your browser at: **http://localhost:3000**
+
+---
+
+## API Endpoints
+
+| Method | Endpoint | Description |
+|---|---|---|
+| POST | `/api/v1/users/` | Create user account |
+| POST | `/api/v1/users/login` | Login + get JWT token |
+| POST | `/api/v1/plans/generate` | Submit plan job → returns job_id |
+| GET | `/api/v1/plans/jobs/{id}` | Poll job status |
+| GET | `/api/v1/plans/jobs/{id}/pdf` | Download completed PDF |
+| POST | `/api/v1/vision/analyze-body` | Upload 3 photos → body composition |
+| GET | `/health` | Service health check |
+
+---
+
+## How Plan Generation Works
+
+**Step 1 — Submit:**
+```
+POST /api/v1/plans/generate
+→ Returns: { job_id: "abc123", status: "PENDING" }
+```
+
+**Step 2 — Poll every 3 seconds:**
+```
+GET /api/v1/plans/jobs/abc123
+→ Returns: { status: "STARTED" }  (processing...)
+→ Returns: { status: "SUCCESS" }  (done — download PDF)
+```
+
+**Step 3 — Download:**
+```
+GET /api/v1/plans/jobs/abc123/pdf
+→ Returns: PDF file stream
+```
+
+Plan generation takes **1–5 minutes** on CPU depending on how many YouTube videos you provide. The frontend shows live progress labels while you wait.
+
+---
+
+## Body Composition Analysis
+
+Upload 3 photos (front / side / back) during onboarding:
+
+- **Estimated body fat %** — shown as a range (e.g. 18–24%)
+- **Muscle level** — scored 1–5
+- **Body type** — ectomorph / lean / athletic / average / heavy
+- **Shoulder-to-waist ratio** — measured via MediaPipe pose landmarks
+  - SWR > 1.2 → Athletic (V-taper) — plan intensity increased
+  - SWR 1.0–1.2 → Balanced — standard plan
+  - SWR < 1.0 → Waist wider than shoulders — extra cardio day added
+
+> **Note:** Body composition uses a stub model for now. Results are estimates. The vision pipeline is fully wired and ready — drop a trained `.keras` model into `models/` to activate real inference.
+
+---
+
+## Formulas Used
+
+| Calculation | Formula |
+|---|---|
+| BMR | Mifflin-St Jeor (gender-specific) |
+| TDEE | BMR × activity multiplier (6 levels, mapped from hours/day) |
+| Protein target | Goal-based g/kg: 1.3 (weight loss) → 1.9 (muscle gain) |
+| Macro split | Protein-first: fix protein → split remaining kcal into carbs/fat by goal |
+| BMI | Quetelet: weight / height² |
+| Ideal weight | Devine formula ± 10% (shown as reference only) |
+| Capacity score | Weighted benchmark average + BMI adj + activity bonus + muscle bonus |
+
+---
+
+## Project Structure
 
 ```
 koda/
 ├── src/
-│   ├── api/            # API Routes and dependencies
-│   ├── config/         # Application configuration
-│   ├── core/           # Core logic (Progression, Orchestration)
-│   ├── reporting/      # PDF generation logic
-│   ├── schemas/        # Pydantic data models
-│   ├── services/       # External service integrations
-│   └── main.py         # Application entry point
-├── .env.example        # Environment variable template
-├── requirements.txt    # Project dependencies
-└── README.md           # Project documentation
+│   ├── main.py                    # FastAPI app + lifespan manager
+│   ├── exceptions.py              # Domain exception hierarchy
+│   ├── api/
+│   │   ├── routes.py              # Legacy redirect shim
+│   │   ├── dependencies.py        # DI providers
+│   │   └── v1/endpoints/
+│   │       ├── plans.py           # Async job dispatch + polling
+│   │       ├── users.py           # User CRUD
+│   │       └── vision.py          # Body composition upload
+│   ├── core/
+│   │   ├── orchestrator.py        # 14-step plan pipeline
+│   │   ├── capacity.py            # Intensity score (0.5–1.5)
+│   │   ├── exercise_scorer.py     # 5-factor cherry-picking
+│   │   ├── scheduler.py           # Split-based workout scheduler
+│   │   ├── meal_selector.py       # 7-day diet plan builder
+│   │   ├── progression.py         # 4-week progressive overload
+│   │   ├── safety.py              # Injury + equipment filter
+│   │   ├── tdee.py                # BMR + TDEE calculation
+│   │   ├── protein.py             # Protein + macro targets
+│   │   └── bmi.py                 # BMI + ideal weight
+│   ├── db/                        # SQLAlchemy ORM layer
+│   ├── integrations/
+│   │   └── ollama_client.py       # Gemma3/Mistral LLM client
+│   ├── schemas/                   # Pydantic models
+│   ├── services/
+│   │   ├── intelligence/          # YouTube + transcript + summarizer
+│   │   └── vision/                # MediaPipe + body composition
+│   ├── reporting/pdf_architect.py # 4-section PDF renderer
+│   ├── tasks/                     # Celery task definitions
+│   └── workers/                   # Celery app config
+└── frontend/
+    └── src/
+        ├── app/                   # Next.js pages
+        ├── components/            # UI components
+        ├── hooks/useJobStatus.ts  # Job polling hook
+        └── lib/api.ts             # API client functions
 ```
 
-## ⚡ Getting Started
+---
 
-### Prerequisites
+## Roadmap
 
-*   Python 3.9 or higher
-*   pip (Python package manager)
+- [ ] Train MobileNetV2 body composition model on real dataset
+- [ ] Replace SQLite with PostgreSQL for multi-user support
+- [ ] Add real JWT auth (currently localStorage)
+- [ ] Docker + docker-compose for one-command setup
+- [ ] Deploy to VPS / Railway
+- [ ] Add Sentry error monitoring
+- [ ] Rate limiting on plan generation endpoint
+- [ ] Support for more Ollama models (configurable via .env)
 
-### Installation
+---
 
-1.  **Clone the repository**
-    ```bash
-    git clone https://github.com/your-username/koda.git
-    cd koda
-    ```
+## Known Limitations
 
-2.  **Create a virtual environment**
-    ```bash
-    python -m venv venv
-    
-    # Windows
-    venv\Scripts\activate
-    
-    # macOS/Linux
-    source venv/bin/activate
-    ```
+- **Body composition is stubbed** — returns realistic dummy values until a trained model is placed in `models/`
+- **CPU inference is slow** — Ollama on CPU takes 1–5 min per plan depending on video count
+- **Windows Celery** — must use `--pool=solo` flag on Windows
+- **YouTube captions** — ~15% of videos have disabled captions and will be skipped gracefully
 
-3.  **Install dependencies**
-    ```bash
-    pip install -r requirements.txt
-    ```
+---
 
-### Configuration
+## Contributing
 
-1.  Copy the example environment file:
-    ```bash
-    cp .env.example .env
-    ```
+This is a personal project. If you find bugs or want to suggest improvements, open an issue.
 
-2.  Update `.env` with your credentials:
-    ```env
-    GEMINI_API_KEY=your_gemini_api_key_here
-    DATABASE_URL=
-    ENVIRONMENT=local
-    ```
+---
 
-## 🏃‍♂️ Usage
+## License
 
-### Running the Server
+MIT
 
-Start the server using Uvicorn with hot-reloading enabled for development:
-```bash
-uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
-```
-The API will be available at `http://localhost:8000`.
+---
 
-### API Documentation
-
-Interactive API documentation is automatically generated by FastAPI:
-*   **Swagger UI:** `http://localhost:8000/docs`
-*   **ReDoc:** `http://localhost:8000/redoc`
-
-### Generating a Plan
-
-**Endpoint:** `POST /api/v1/generate-plan`
-
-**Request Body:**
-
-```json
-{
-  "transcript_text": "User expressed interest in building strength...",
-  "user_profile": {
-    "biometrics": {
-      "age": 25,
-      "weight_kg": 75.5,
-      "height_cm": 180,
-      "gender": "male"
-    },
-    "metrics": {
-      "pushup_count": 30,
-      "situp_count": 40,
-      "squat_count": 50
-    },
-    "experience_level": "intermediate",
-    "fitness_goal": "strength",
-    "equipment": ["dumbbell", "barbell"],
-    "injuries": []
-  }
-}
-```
-
-**Response:** Returns a downloadable PDF file.
-
-## 🧪 Core Logic Explained
-
-### Progression Engine
-Located in `src/core/progression.py`, the engine ensures users don't plateau:
-- **Volume:** Increases reps by ~10% weekly.
-- **Intensity:** Adjusts weights based on a calculated `capacity_score` and adds progressive overload (+2.5kg/week where applicable).
-
-### PDF Architect
-Located in `src/reporting/pdf_architect.py`:
-- Converts the structured `FitnessPlan` object into a strictly formatted A4 PDF.
-- Includes visual tables for exercises, sets, reps, and rest periods.
-
-## 🤝 Contributing
-
-1.  Fork the repository
-2.  Create your feature branch (`git checkout -b feature/amazing-feature`)
-3.  Commit your changes (`git commit -m 'Add some amazing feature'`)
-4.  Push to the branch (`git push origin feature/amazing-feature`)
-5.  Open a Pull Request
-
-## 📄 License
-
-Distributed under the MIT License. See `LICENSE` for more information.
+*Built with FastAPI, Ollama, Celery, MediaPipe, ReportLab, and Next.js.*
